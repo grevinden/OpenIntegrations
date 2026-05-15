@@ -1,0 +1,97 @@
+name: Full Auto-Update Pipeline
+
+on:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: '0 3 * * *'  # Каждый день в 3:00 UTC
+  workflow_dispatch:
+    inputs:
+      filter_paths:
+        description: 'Paths to filter (space-separated)'
+        required: false
+        default: 'src/addins/commons src/addins/check_vulnerabilities.bat'
+
+jobs:
+  update-filtered-fork:
+    runs-on: ubuntu-latest
+    outputs:
+      commit_hash: ${{ steps.push.outputs.commit_hash }}
+    
+    steps:
+      - name: Clone source repository
+        run: |
+          git clone https://github.com/Bayselonarrend/OpenIntegrations.git source-repo
+      
+      - name: Install git-filter-repo
+        run: pip install git-filter-repo
+      
+      - name: Filter repository
+        run: |
+          cd source-repo
+          
+          # Преобразуем пути в аргументы --path
+          PATHS="${{ github.event.inputs.filter_paths || 'src/addins/commons src/addins/check_vulnerabilities.bat' }}"
+          ARGS=""
+          for p in $PATHS; do
+            ARGS="$ARGS --path $p"
+          done
+          
+          echo "Filter args: $ARGS"
+          git filter-repo $ARGS --force
+      
+      - name: Push to FILTER_REPO
+        id: push
+        env:
+          GIT_TOKEN: ${{ secrets.GIT_TOKEN }}
+        run: |
+          cd source-repo
+          git remote add origin https://oauth2:${GIT_TOKEN}@github.com/grevinden/openIntegrations-commons-filtered.git
+          git push -u origin main --force
+          
+          COMMIT_HASH=$(git rev-parse HEAD)
+          echo "commit_hash=${COMMIT_HASH}" >> $GITHUB_OUTPUT
+          echo "Pushed commit: ${COMMIT_HASH}"
+  
+  update-small-repo:
+    needs: update-filtered-fork
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout SMALL_REPO
+        uses: actions/checkout@v4
+        with:
+          repository: grevinden/openIntegrations-commons
+          token: ${{ secrets.GIT_TOKEN }}
+          submodules: true
+      
+      - name: Configure Git
+        run: |
+          git config user.name "GitHub Actions Bot"
+          git config user.email "bot@github.com"
+      
+      - name: Update submodule
+        env:
+          SOURCE_COMMIT: ${{ needs.update-filtered-fork.outputs.commit_hash }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          git submodule update --init --remote vendor/OpenIntegrations
+          
+          if git diff --cached --quiet && git diff --quiet; then
+            echo "No changes detected"
+          else
+            git add vendor/OpenIntegrations
+            
+            # Формируем сообщение коммита
+            cat > /tmp/commit_msg.txt << EOF
+          Auto-update submodule
+          
+          Source commit: ${SOURCE_COMMIT}
+          Filter: src/addins/commons src/addins/check_vulnerabilities.bat
+          Triggered by: ${EVENT_NAME}
+          EOF
+            
+            git commit -F /tmp/commit_msg.txt
+            git push origin main
+            echo "Submodule updated successfully!"
+          fi
