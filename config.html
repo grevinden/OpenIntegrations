@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenIntegrations — Filter Config</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 800px; 
+            margin: 50px auto; 
+            padding: 20px;
+            background: #0d1117;
+            color: #c9d1d9;
+        }
+        h1 { color: #58a6ff; margin-bottom: 10px; }
+        p { color: #8b949e; margin-bottom: 20px; }
+        label { display: block; margin-bottom: 5px; font-weight: bold; }
+        textarea { 
+            width: 100%; 
+            height: 200px; 
+            font-family: 'Fira Code', monospace;
+            background: #161b22;
+            color: #c9d1d9;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 12px;
+            font-size: 14px;
+            resize: vertical;
+        }
+        input[type="password"] {
+            width: 100%;
+            padding: 10px;
+            background: #161b22;
+            color: #c9d1d9;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            margin-bottom: 15px;
+        }
+        button { 
+            padding: 10px 20px; 
+            background: #238636; 
+            color: white; 
+            border: 1px solid #2ea043;
+            border-radius: 6px; 
+            cursor: pointer;
+            font-size: 14px;
+        }
+        button:hover { background: #2ea043; }
+        .status { 
+            margin-top: 20px; 
+            padding: 12px; 
+            border-radius: 6px; 
+            display: none;
+        }
+        .success { background: #051b11; color: #3fb950; border: 1px solid #238636; display: block; }
+        .error { background: #1b0505; color: #f85149; border: 1px solid #da3633; display: block; }
+        .info { background: #0d1117; color: #8b949e; border: 1px solid #30363d; display: block; }
+        .hint { font-size: 12px; color: #8b949e; margin-top: 5px; }
+        .nav { margin-bottom: 30px; }
+        .nav a { color: #58a6ff; text-decoration: none; }
+        .nav a:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+    <div class="nav">
+        <a href="https://github.com/grevinden/openIntegrations">← grevinden/openIntegrations</a>
+    </div>
+
+    <h1>⚙️ Filter Paths Configuration</h1>
+    <p>Настройка путей для автоматической фильтрации в <code>openIntegrations-commons-filtered</code></p>
+    
+    <label for="paths">Пути (по одному на строку):</label>
+    <textarea id="paths" placeholder="src/addins/commons&#10;src/addins/check_vulnerabilities.bat"># Filter paths
+src/addins/commons
+src/addins/check_vulnerabilities.bat</textarea>
+    <p class="hint">Строки начинающиеся с # игнорируются</p>
+    
+    <br>
+    <label for="token">GitHub Personal Access Token:</label>
+    <input type="password" id="token" placeholder="ghp_xxxxxxxxxxxxxxxxxxxx">
+    <p class="hint">Токен нужен с правами <code>repo</code> и <code>workflow</code></p>
+    
+    <br>
+    <button onclick="saveConfig()">💾 Сохранить</button>
+    <button onclick="loadConfig()" style="background: #21262d; border-color: #30363d; margin-left: 10px;">📥 Загрузить текущие</button>
+    
+    <div id="status"></div>
+
+    <script>
+        const REPO = 'grevinden/openIntegrations';
+        const VAR_NAME = 'FILTER_PATHS';
+        
+        async function apiCall(method, body) {
+            const token = document.getElementById('token').value;
+            if (!token) {
+                showStatus('Введите токен!', 'error');
+                return;
+            }
+            
+            const url = `https://api.github.com/repos/${REPO}/actions/variables/${VAR_NAME}`;
+            
+            try {
+                const response = await fetch(url, {
+                    method: method,
+                    headers: {
+                        'Authorization': `token ${token}`,
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/vnd.github.v3+json'
+                    },
+                    body: body ? JSON.stringify(body) : undefined
+                });
+                
+                if (method === 'DELETE' && response.status === 204) {
+                    return { deleted: true };
+                }
+                
+                const data = await response.json();
+                
+                if (!response.ok) {
+                    throw new Error(data.message || `HTTP ${response.status}`);
+                }
+                
+                return data;
+            } catch (error) {
+                throw error;
+            }
+        }
+        
+        function showStatus(message, type) {
+            const status = document.getElementById('status');
+            status.textContent = message;
+            status.className = `status ${type}`;
+        }
+        
+        async function loadConfig() {
+            showStatus('Загрузка...', 'info');
+            
+            try {
+                const data = await apiCall('GET');
+                const paths = data.value.replace(/\s+/g, '\n');
+                document.getElementById('paths').value = paths;
+                showStatus('✅ Конфигурация загружена!', 'success');
+            } catch (error) {
+                showStatus('❌ Ошибка: ' + error.message, 'error');
+            }
+        }
+        
+        async function saveConfig() {
+            showStatus('Сохранение...', 'info');
+            
+            const paths = document.getElementById('paths').value
+                .split('\n')
+                .map(line => line.trim())
+                .filter(line => line && !line.startsWith('#'))
+                .join(' ');
+            
+            if (!paths) {
+                showStatus('❌ Укажите хотя бы один путь!', 'error');
+                return;
+            }
+            
+            try {
+                // Сначала пробуем обновить
+                try {
+                    await apiCall('PATCH', { name: VAR_NAME, value: paths });
+                    showStatus('✅ Конфигурация обновлена!', 'success');
+                } catch (updateError) {
+                    // Если не существует — создаём
+                    if (updateError.message.includes('404') || updateError.message.includes('Not Found')) {
+                        await apiCall('POST', { name: VAR_NAME, value: paths });
+                        showStatus('✅ Конфигурация создана!', 'success');
+                    } else {
+                        throw updateError;
+                    }
+                }
+            } catch (error) {
+                showStatus('❌ Ошибка: ' + error.message + '\n\nУбедитесь что токен имеет права repo и workflow', 'error');
+            }
+        }
+    </script>
+</body>
+</html>
